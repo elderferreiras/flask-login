@@ -348,7 +348,15 @@ class LoginManager(object):
         # if the sess is empty, it's an anonymous user or just logged out
         # so we can skip this
         if sess and ident != sess.get('_id', None):
-            if mode == 'basic' or sess.permanent:
+            # Patching flask-login to use `strong` mode with permanent sessions
+            # The terminology here is a bit misleading since permanent sessions
+            # have an expiration date that could be 1 second.
+            #
+            # We're not using "remember" functionality so this change should
+            # work for our use case.
+            #
+            # Old code `if mode == 'basic' and sess.permament:`
+            if mode == 'basic':
                 sess['_fresh'] = False
                 session_protected.send(app)
                 return False
