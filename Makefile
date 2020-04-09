@@ -1,4 +1,4 @@
-.PHONY: all test clean_coverage clean pep8 pyflakes check 
+.PHONY: all test clean_coverage clean pep8 pyflakes check
 
 all:
 	@echo 'test           run the unit tests'
@@ -10,7 +10,8 @@ all:
 
 test: clean_coverage
 	@echo 'Running all tests...'
-	@VERBOSE=1 PATH=${PATH} ./run-tests.sh
+	coverage run --source=flask_login --module pytest
+	coverage report
 
 clean_coverage:
 	@rm -f .coverage
@@ -20,7 +21,7 @@ clean:
 
 pep8:
 	@echo 'Checking pep8 compliance...'
-	@pep8 flask_login/* test_login.py
+	@pycodestyle flask_login/* test_login.py
 
 pyflakes:
 	@echo 'Running pyflakes...'

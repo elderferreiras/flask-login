@@ -8,11 +8,18 @@ import base64
 import collections
 from datetime import timedelta, datetime
 from contextlib import contextmanager
-from mock import ANY, patch, Mock
+try:
+    from mock import ANY, patch, Mock
+except ImportError:
+    from unittest.mock import ANY, patch, Mock
 from semantic_version import Version
 
 
 from werkzeug import __version__ as werkzeug_version
+try:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+except ImportError:
+    from werkzeug.contrib.fixers import ProxyFix
 from flask import (
     Flask,
     Blueprint,
@@ -30,7 +37,8 @@ from flask_login import (LoginManager, UserMixin, AnonymousUserMixin,
                          user_needs_refresh, make_next_param, login_url,
                          login_fresh, login_required, session_protected,
                          fresh_login_required, confirm_login, encode_cookie,
-                         decode_cookie, set_login_view, user_accessed)
+                         decode_cookie, set_login_view, user_accessed,
+                         FlaskLoginClient)
 from flask_login.__about__ import (__title__, __description__, __url__,
                                    __version_info__, __version__, __author__,
                                    __author_email__, __maintainer__,
@@ -187,11 +195,14 @@ class InitializationTestCase(unittest.TestCase):
     def test_login_disabled_is_set(self):
         login_manager = LoginManager(self.app, add_context_processor=True)
         self.assertFalse(login_manager._login_disabled)
+        with self.app.app_context():
+            login_manager._login_disabled = True
+            self.assertTrue(login_manager._login_disabled)
 
     def test_no_user_loader_raises(self):
         login_manager = LoginManager(self.app, add_context_processor=True)
         with self.app.test_request_context():
-            session['user_id'] = '2'
+            session['_user_id'] = '2'
             with self.assertRaises(Exception) as cm:
                 login_manager._load_user()
             expected_message = 'Missing user_loader or request_loader'
@@ -203,7 +214,7 @@ class MethodViewLoginTestCase(unittest.TestCase):
         self.app = Flask(__name__)
         self.login_manager = LoginManager()
         self.login_manager.init_app(self.app)
-        self.login_manager._login_disabled = False
+        self.app.config['LOGIN_DISABLED'] = False
 
         class SecretEndpoint(MethodView):
             decorators = [
@@ -237,7 +248,7 @@ class LoginTestCase(unittest.TestCase):
         self.app.config['REMEMBER_COOKIE_NAME'] = self.remember_cookie_name
         self.login_manager = LoginManager()
         self.login_manager.init_app(self.app)
-        self.login_manager._login_disabled = False
+        self.app.config['LOGIN_DISABLED'] = False
 
         @self.app.route('/')
         def index():
@@ -432,7 +443,7 @@ class LoginTestCase(unittest.TestCase):
     def test_logout_without_current_user(self):
         with self.app.test_request_context():
             login_user(notch)
-            del session['user_id']
+            del session['_user_id']
             with listen_to(user_logged_out) as listener:
                 logout_user()
                 listener.assert_heard_one(self.app, user=ANY)
@@ -509,6 +520,25 @@ class LoginTestCase(unittest.TestCase):
 
         @self.app.route('/login')
         def login():
+            return session.pop('next', '')
+
+        with self.app.test_client() as c:
+            result = c.get('/secret')
+            self.assertEqual(result.status_code, 302)
+            self.assertEqual(result.location,
+                             'http://localhost/login')
+            self.assertEqual(c.get('/login').data.decode('utf-8'), '/secret')
+
+    def test_unauthorized_with_next_in_strong_session(self):
+        self.login_manager.login_view = 'login'
+        self.app.config['SESSION_PROTECTION'] = 'strong'
+        self.app.config['USE_SESSION_FOR_NEXT'] = True
+
+        @self.app.route('/login')
+        def login():
+            if(current_user.is_authenticated):
+                # Or anything that touches current_user
+                pass
             return session.pop('next', '')
 
         with self.app.test_client() as c:
@@ -753,7 +783,7 @@ class LoginTestCase(unittest.TestCase):
 
         with self.assertRaises(Exception) as cm:
             with self.app.test_request_context():
-                session['user_id'] = 2
+                session['_user_id'] = 2
                 self.login_manager._set_cookie(None)
 
         expected_exception_message = 'REMEMBER_COOKIE_DURATION must be a ' \
@@ -1006,7 +1036,7 @@ class LoginTestCase(unittest.TestCase):
         with self.app.test_client() as c:
             c.get('/login-notch-remember')
             with c.session_transaction() as sess:
-                sess['user_id'] = None
+                sess['_user_id'] = None
             c.set_cookie(domain, self.remember_cookie_name, 'foo')
             result = c.get('/username')
             self.assertEqual(u'Anonymous', result.data.decode('utf-8'))
@@ -1205,7 +1235,7 @@ class LoginTestCase(unittest.TestCase):
         def protected():
             return u'Access Granted'
 
-        self.app.login_manager._login_disabled = True
+        self.app.config['LOGIN_DISABLED'] = True
 
         with self.app.test_client() as c:
             result = c.get('/protected')
@@ -1270,7 +1300,7 @@ class LoginViaRequestTestCase(unittest.TestCase):
         self.app.config['REMEMBER_COOKIE_NAME'] = self.remember_cookie_name
         self.login_manager = LoginManager()
         self.login_manager.init_app(self.app)
-        self.login_manager._login_disabled = False
+        self.app.config['LOGIN_DISABLED'] = False
 
         @self.app.route('/')
         def index():
@@ -1292,7 +1322,7 @@ class LoginViaRequestTestCase(unittest.TestCase):
 
         @self.login_manager.request_loader
         def load_user_from_request(request):
-            user_id = request.args.get('user_id') or session.get('user_id')
+            user_id = request.args.get('user_id') or session.get('_user_id')
             try:
                 user_id = int(float(user_id))
             except TypeError:
@@ -1440,6 +1470,25 @@ class CookieEncodingTestCase(unittest.TestCase):
             self.assertIsNone(decode_cookie(u'Foo|BAD_BASH'))
             self.assertIsNone(decode_cookie(u'no bar'))
 
+    def test_cookie_encoding_with_key(self):
+        app = Flask(__name__)
+        app.config['SECRET_KEY'] = 'not-used'
+        key = 'deterministic'
+
+        # COOKIE = u'1|7d276051c1eec578ed86f6b8478f7f7d803a7970'
+
+        # Due to the restriction of 80 chars I have to break up the hash in two
+        h1 = u'0e9e6e9855fbe6df7906ec4737578a1d491b38d3fd5246c1561016e189d6516'
+        h2 = u'043286501ca43257c938e60aad77acec5ce916b94ca9d00c0bb6f9883ae4b82'
+        h3 = u'ae'
+        COOKIE = u'1|' + h1 + h2 + h3
+
+        with app.test_request_context():
+            self.assertEqual(COOKIE, encode_cookie(u'1', key=key))
+            self.assertEqual(u'1', decode_cookie(COOKIE, key=key))
+            self.assertIsNone(decode_cookie(u'Foo|BAD_BASH', key=key))
+            self.assertIsNone(decode_cookie(u'no bar', key=key))
+
 
 class SecretKeyTestCase(unittest.TestCase):
     def setUp(self):
@@ -1521,7 +1570,7 @@ class UnicodeCookieUserIDTestCase(unittest.TestCase):
         self.app.config['REMEMBER_COOKIE_NAME'] = self.remember_cookie_name
         self.login_manager = LoginManager()
         self.login_manager.init_app(self.app)
-        self.login_manager._login_disabled = False
+        self.app.config['LOGIN_DISABLED'] = False
 
         @self.app.route('/')
         def index():
@@ -1589,7 +1638,7 @@ class StrictHostForRedirectsTestCase(unittest.TestCase):
         self.app.config['REMEMBER_COOKIE_NAME'] = self.remember_cookie_name
         self.login_manager = LoginManager()
         self.login_manager.init_app(self.app)
-        self.login_manager._login_disabled = False
+        self.app.config['LOGIN_DISABLED'] = False
 
         @self.app.route('/secret')
         def secret():
@@ -1641,9 +1690,12 @@ class StrictHostForRedirectsTestCase(unittest.TestCase):
             self.assertEqual(result.location,
                              'http://good.com/login?next=%2Fsecret')
 
+    @unittest.skipIf(Version(werkzeug_version) < Version('0.15', partial=True),
+                     "ProxyFix moved to werkzeug.middleware.proxy_fix in 0.15")
     def test_unauthorized_uses_host_from_x_forwarded_for_header(self):
         self.login_manager.login_view = 'login'
         self.app.config['FORCE_HOST_FOR_REDIRECTS'] = None
+        self.app.wsgi_app = ProxyFix(self.app.wsgi_app, x_host=1)
 
         @self.app.route('/login')
         def login():
@@ -1678,3 +1730,63 @@ class StrictHostForRedirectsTestCase(unittest.TestCase):
             self.assertEqual(result.status_code, 302)
             self.assertEqual(result.location,
                              'http://good.com/login?next=%2Fsecret')
+
+
+class CustomTestClientTestCase(unittest.TestCase):
+    def setUp(self):
+        self.app = Flask(__name__)
+        self.app.config['SECRET_KEY'] = 'deterministic'
+        self.app.config['SESSION_PROTECTION'] = None
+        self.remember_cookie_name = 'remember'
+        self.app.config['REMEMBER_COOKIE_NAME'] = self.remember_cookie_name
+        self.login_manager = LoginManager()
+        self.login_manager.init_app(self.app)
+        self.app.config['LOGIN_DISABLED'] = False
+        self.app.test_client_class = FlaskLoginClient
+
+        @self.app.route('/')
+        def index():
+            return u'Welcome!'
+
+        @self.app.route('/username')
+        def username():
+            if current_user.is_authenticated:
+                return current_user.name
+            return u'Anonymous'
+
+        @self.app.route('/is-fresh')
+        def is_fresh():
+            return unicode(login_fresh())
+
+        @self.login_manager.user_loader
+        def load_user(user_id):
+            return USERS[int(user_id)]
+
+        # This will help us with the possibility of typoes in the tests. Now
+        # we shouldn't have to check each response to help us set up state
+        # (such as login pages) to make sure it worked: we will always
+        # get an exception raised (rather than return a 404 response)
+        @self.app.errorhandler(404)
+        def handle_404(e):
+            raise e
+
+        unittest.TestCase.setUp(self)
+
+    def test_no_args_to_test_client(self):
+        with self.app.test_client() as c:
+            result = c.get('/username')
+            self.assertEqual(u'Anonymous', result.data.decode('utf-8'))
+
+    def test_user_arg_to_test_client(self):
+        with self.app.test_client(user=notch) as c:
+            username = c.get('/username')
+            self.assertEqual(u'Notch', username.data.decode('utf-8'))
+            is_fresh = c.get('/is-fresh')
+            self.assertEqual(u'True', is_fresh.data.decode('utf-8'))
+
+    def test_fresh_login_arg_to_test_client(self):
+        with self.app.test_client(user=creeper, fresh_login=False) as c:
+            username = c.get('/username')
+            self.assertEqual(u'Creeper', username.data.decode('utf-8'))
+            is_fresh = c.get('/is-fresh')
+            self.assertEqual(u'False', is_fresh.data.decode('utf-8'))

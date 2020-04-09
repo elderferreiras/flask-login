@@ -10,7 +10,7 @@ import warnings
 from datetime import datetime, timedelta
 
 from flask import (_request_ctx_stack, abort, current_app, flash, redirect,
-                   request, session)
+                   has_app_context, request, session)
 
 from ._compat import text_type
 from .config import (COOKIE_NAME, COOKIE_DURATION, COOKIE_SECURE,
@@ -116,8 +116,6 @@ class LoginManager(object):
         app.login_manager = self
         app.after_request(self._update_remember_cookie)
 
-        self._login_disabled = app.config.get('LOGIN_DISABLED', False)
-
         if add_context_processor:
             app.context_processor(_user_context_processor)
 
@@ -169,6 +167,7 @@ class LoginManager(object):
         config = current_app.config
         if config.get('USE_SESSION_FOR_NEXT', USE_SESSION_FOR_NEXT):
             login_url = expand_login_view(login_view)
+            session['_id'] = self._session_identifier_generator()
             session['next'] = make_next_param(login_url, request.url)
             redirect_url = make_login_url(login_view)
         else:
@@ -281,6 +280,7 @@ class LoginManager(object):
         config = current_app.config
         if config.get('USE_SESSION_FOR_NEXT', USE_SESSION_FOR_NEXT):
             login_url = expand_login_view(self.refresh_view)
+            session['_id'] = self._session_identifier_generator()
             session['next'] = make_next_param(login_url, request.url)
             redirect_url = make_login_url(self.refresh_view)
         else:
@@ -313,7 +313,7 @@ class LoginManager(object):
         user = None
 
         # Load user from Flask Session
-        user_id = session.get('user_id')
+        user_id = session.get('_user_id')
         if user_id is not None and self._user_callback is not None:
             user = self._user_callback(user_id)
 
@@ -323,7 +323,7 @@ class LoginManager(object):
             cookie_name = config.get('REMEMBER_COOKIE_NAME', COOKIE_NAME)
             header_name = config.get('AUTH_HEADER_NAME', AUTH_HEADER_NAME)
             has_cookie = (cookie_name in request.cookies and
-                          session.get('remember') != 'clear')
+                          session.get('_remember') != 'clear')
             if has_cookie:
                 cookie = request.cookies[cookie_name]
                 user = self._load_user_from_remember_cookie(cookie)
@@ -364,7 +364,7 @@ class LoginManager(object):
                 for k in SESSION_KEYS:
                     sess.pop(k, None)
 
-                sess['remember'] = 'clear'
+                sess['_remember'] = 'clear'
                 session_protected.send(app)
                 return True
 
@@ -373,7 +373,7 @@ class LoginManager(object):
     def _load_user_from_remember_cookie(self, cookie):
         user_id = decode_cookie(cookie)
         if user_id is not None:
-            session['user_id'] = user_id
+            session['_user_id'] = user_id
             session['_fresh'] = False
             user = None
             if self._user_callback:
@@ -404,14 +404,14 @@ class LoginManager(object):
 
     def _update_remember_cookie(self, response):
         # Don't modify the session unless there's something to do.
-        if 'remember' not in session and \
+        if '_remember' not in session and \
                 current_app.config.get('REMEMBER_COOKIE_REFRESH_EACH_REQUEST'):
-            session['remember'] = 'set'
+            session['_remember'] = 'set'
 
-        if 'remember' in session:
-            operation = session.pop('remember', None)
+        if '_remember' in session:
+            operation = session.pop('_remember', None)
 
-            if operation == 'set' and 'user_id' in session:
+            if operation == 'set' and '_user_id' in session:
                 self._set_cookie(response)
             elif operation == 'clear':
                 self._clear_cookie(response)
@@ -428,13 +428,13 @@ class LoginManager(object):
         secure = config.get('REMEMBER_COOKIE_SECURE', COOKIE_SECURE)
         httponly = config.get('REMEMBER_COOKIE_HTTPONLY', COOKIE_HTTPONLY)
 
-        if 'remember_seconds' in session:
-            duration = timedelta(seconds=session['remember_seconds'])
+        if '_remember_seconds' in session:
+            duration = timedelta(seconds=session['_remember_seconds'])
         else:
             duration = config.get('REMEMBER_COOKIE_DURATION', COOKIE_DURATION)
 
         # prepare data
-        data = encode_cookie(text_type(session['user_id']))
+        data = encode_cookie(text_type(session['_user_id']))
 
         if isinstance(duration, int):
             duration = timedelta(seconds=duration)
@@ -461,3 +461,15 @@ class LoginManager(object):
         domain = config.get('REMEMBER_COOKIE_DOMAIN')
         path = config.get('REMEMBER_COOKIE_PATH', '/')
         response.delete_cookie(cookie_name, domain=domain, path=path)
+
+    @property
+    def _login_disabled(self):
+        """Legacy property, use app.config['LOGIN_DISABLED'] instead."""
+        if has_app_context():
+            return current_app.config.get('LOGIN_DISABLED', False)
+        return False
+
+    @_login_disabled.setter
+    def _login_disabled(self, newvalue):
+        """Legacy property setter, use app.config['LOGIN_DISABLED'] instead."""
+        current_app.config['LOGIN_DISABLED'] = newvalue

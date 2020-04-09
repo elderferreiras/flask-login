@@ -56,6 +56,15 @@ login with::
     login_manager.init_app(app)
 
 
+By default, Flask-Login uses sessions for authentication. This means you must
+set the secret key on your application, otherwise Flask will give you
+an error message telling you to do so. See the `Flask documentation on sessions`_
+to see how to set a secret key.
+
+*Warning:* Make SURE to use the given command in the
+"How to generate good secret keys" section to generate your own secret key.
+DO NOT use the example one.
+
 How it Works
 ============
 You will need to provide a `~LoginManager.user_loader` callback. This callback
@@ -305,22 +314,22 @@ Alternative Tokens
 ==================
 Using the user ID as the value of the remember token means you must change the
 user's ID to invalidate their login sessions. One way to improve this is to use
-an alternative session token instead of the user's ID. For example::
+an alternative user id instead of the user's ID. For example::
 
     @login_manager.user_loader
-    def load_user(session_token):
-        return User.query.filter_by(session_token=session_token).first()
+    def load_user(user_id):
+        return User.query.filter_by(alternative_id=user_id).first()
 
-Then the `~UserMixin.get_id` method of your User class would return the session
-token instead of the user's ID::
+Then the `~UserMixin.get_id` method of your User class would return the
+alternative id instead of the user's primary ID::
 
     def get_id(self):
-        return unicode(self.session_token)
+        return unicode(self.alternative_id)
 
-This way you are free to change the user's session token to a new randomly
+This way you are free to change the user's alternative id to a new randomly
 generated value when the user changes their password, which would ensure their
-old authentication sessions will cease to be valid. Note that the session
-token must still uniquely identify the user... think of it as a second user ID.
+old authentication sessions will cease to be valid. Note that the alternative
+id must still uniquely identify the user... think of it as a second user ID.
 
 
 Fresh Logins
@@ -451,6 +460,34 @@ the session depending on a flag you set on the request. For example::
 This prevents setting the Flask Session cookie whenever the user authenticated
 using your `~LoginManager.header_loader`.
 
+Automated Testing
+=================
+To make it easier for you to write automated tests, Flask-Login provides a
+custom test client class that will set the user's login cookie for you.
+To use this custom test client class, assign it to the
+:attr:`test_client_class <flask.Flask.test_client_class>` attribute
+on your application object, like this::
+
+    from flask_login import FlaskLoginClient
+
+    app.test_client_class = FlaskLoginClient
+
+Next, use the :meth:`app.test_client() <flask.Flask.test_client>` method
+to make a test client, as you normally do. However, now you can pass a
+user object to this method, and your client will be automatically
+logged in with this user!
+
+.. code-block:: python
+
+    def test_simple(self):
+        user = User.query.get(1)
+        with app.test_client(user=user) as client:
+            # this request has user 1 already logged in!
+            resp = client.get("/")
+
+Note that you must use a keyword argument, not a positional argument.
+``test_client(user=user)`` will work, but ``test_client(user)``
+will not.
 
 Localization
 ============
@@ -555,6 +592,8 @@ Utilities
 ---------
 .. autofunction:: login_url
 
+.. autoclass:: FlaskLoginClient
+
 
 Signals
 -------
@@ -594,4 +633,5 @@ signals in your code.
    the app.
 
 .. _Flask documentation on signals: http://flask.pocoo.org/docs/signals/
-.. _this Flask Snippet: http://flask.pocoo.org/snippets/62/
+.. _this Flask Snippet: https://web.archive.org/web/20120517003641/http://flask.pocoo.org/snippets/62/
+.. _Flask documentation on sessions: http://flask.pocoo.org/docs/quickstart/#sessions
