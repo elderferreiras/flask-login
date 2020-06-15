@@ -1,7 +1,8 @@
 # Flask-Login
 
-[![build status](https://travis-ci.org/maxcountryman/flask-login.svg?branch=master)](https://travis-ci.org/maxcountryman/flask-login)
+![Tests](https://github.com/maxcountryman/flask-login/workflows/Tests/badge.svg)
 [![coverage](https://coveralls.io/repos/maxcountryman/flask-login/badge.svg?branch=master&service=github)](https://coveralls.io/github/maxcountryman/flask-login?branch=master)
+[![Software License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
 
 Flask-Login provides user session management for Flask. It handles the common
 tasks of logging in, logging out, and remembering your users' sessions over

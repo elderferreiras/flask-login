@@ -14,8 +14,9 @@ from flask import (_request_ctx_stack, abort, current_app, flash, redirect,
 
 from ._compat import text_type
 from .config import (COOKIE_NAME, COOKIE_DURATION, COOKIE_SECURE,
-                     COOKIE_HTTPONLY, LOGIN_MESSAGE, LOGIN_MESSAGE_CATEGORY,
-                     REFRESH_MESSAGE, REFRESH_MESSAGE_CATEGORY, ID_ATTRIBUTE,
+                     COOKIE_HTTPONLY, COOKIE_SAMESITE, LOGIN_MESSAGE,
+                     LOGIN_MESSAGE_CATEGORY, REFRESH_MESSAGE,
+                     REFRESH_MESSAGE_CATEGORY, ID_ATTRIBUTE,
                      AUTH_HEADER_NAME, SESSION_KEYS, USE_SESSION_FOR_NEXT)
 from .mixins import AnonymousUserMixin
 from .signals import (user_loaded_from_cookie, user_loaded_from_header,
@@ -185,24 +186,12 @@ class LoginManager(object):
         :type callback: callable
         '''
         self._user_callback = callback
-        return callback
+        return self.user_callback
 
-    def header_loader(self, callback):
-        '''
-        This function has been deprecated. Please use
-        :meth:`LoginManager.request_loader` instead.
-
-        This sets the callback for loading a user from a header value.
-        The function you set should take an authentication token and
-        return a user object, or `None` if the user does not exist.
-
-        :param callback: The callback for retrieving a user object.
-        :type callback: callable
-        '''
-        print('LoginManager.header_loader is deprecated. Use ' +
-              'LoginManager.request_loader instead.')
-        self._header_callback = callback
-        return callback
+    @property
+    def user_callback(self):
+        '''Gets the user_loader callback set by user_loader decorator.'''
+        return self._user_callback
 
     def request_loader(self, callback):
         '''
@@ -214,7 +203,12 @@ class LoginManager(object):
         :type callback: callable
         '''
         self._request_callback = callback
-        return callback
+        return self.request_callback
+
+    @property
+    def request_callback(self):
+        '''Gets the request_loader callback set by request_loader decorator.'''
+        return self._request_callback
 
     def unauthorized_handler(self, callback):
         '''
@@ -270,12 +264,13 @@ class LoginManager(object):
         if not self.refresh_view:
             abort(401)
 
-        if self.localize_callback is not None:
-            flash(self.localize_callback(self.needs_refresh_message),
-                  category=self.needs_refresh_message_category)
-        else:
-            flash(self.needs_refresh_message,
-                  category=self.needs_refresh_message_category)
+        if self.needs_refresh_message:
+            if self.localize_callback is not None:
+                flash(self.localize_callback(self.needs_refresh_message),
+                      category=self.needs_refresh_message_category)
+            else:
+                flash(self.needs_refresh_message,
+                      category=self.needs_refresh_message_category)
 
         config = current_app.config
         if config.get('USE_SESSION_FOR_NEXT', USE_SESSION_FOR_NEXT):
@@ -288,6 +283,23 @@ class LoginManager(object):
             redirect_url = make_login_url(login_url, next_url=request.url)
 
         return redirect(redirect_url)
+
+    def header_loader(self, callback):
+        '''
+        This function has been deprecated. Please use
+        :meth:`LoginManager.request_loader` instead.
+
+        This sets the callback for loading a user from a header value.
+        The function you set should take an authentication token and
+        return a user object, or `None` if the user does not exist.
+
+        :param callback: The callback for retrieving a user object.
+        :type callback: callable
+        '''
+        print('LoginManager.header_loader is deprecated. Use ' +
+              'LoginManager.request_loader instead.')
+        self._header_callback = callback
+        return callback
 
     def _update_request_context_with_user(self, user=None):
         '''Store the given user as ctx.user.'''
@@ -427,6 +439,7 @@ class LoginManager(object):
 
         secure = config.get('REMEMBER_COOKIE_SECURE', COOKIE_SECURE)
         httponly = config.get('REMEMBER_COOKIE_HTTPONLY', COOKIE_HTTPONLY)
+        samesite = config.get('REMEMBER_COOKIE_SAMESITE', COOKIE_SAMESITE)
 
         if '_remember_seconds' in session:
             duration = timedelta(seconds=session['_remember_seconds'])
@@ -453,7 +466,8 @@ class LoginManager(object):
                             domain=domain,
                             path=path,
                             secure=secure,
-                            httponly=httponly)
+                            httponly=httponly,
+                            samesite=samesite)
 
     def _clear_cookie(self, response):
         config = current_app.config
